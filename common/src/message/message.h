@@ -133,6 +133,7 @@ namespace ar
 		}
 	};
 
+
 	struct ValidationMessage {
 		u64 challenge;
 
@@ -202,13 +203,22 @@ namespace ar
 		constexpr usize size() const noexcept { return username.size() + public_key.size(); }
 	};
 
+	enum class FeedbackType : u8
+	{
+		ValidationFailed /*= std::numeric_limits<i8>::min()*/,
+		AuthenticationFailed,
+		Undefined /*= 0*/,
+		AuthenticationSucceed,
+		ValidationSucceed,
+	};
+
 	struct FeedbackMessage
 	{
-		u8 result;
+		FeedbackType data;
 
 		[[nodiscard]] std::vector<u8> serialize() const noexcept
 		{
-			return {{this->result}};
+			return {{static_cast<u8>(this->data)}};
 		}
 
 		[[nodiscard]] MessageType type() const noexcept { return MessageType::Feedback; }
@@ -218,11 +228,11 @@ namespace ar
 			if (body_.size() < sizeof(u8))
 				return false;
 
-			result = body_[0];
+			data = static_cast<FeedbackType>(body_[0]);
 			return true;
 		}
 
-		constexpr usize size() const noexcept { return sizeof(u8); }
+		constexpr usize size() const noexcept { return sizeof(FeedbackType); }
 	};
 
 	enum class ChatOpponent : u8

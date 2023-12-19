@@ -74,8 +74,8 @@ namespace ar
 
 		void set(u32 id_, std::span<Chat> chats_) noexcept
 		{
-			m_current_user_id = static_cast<i64>(id_);
 			clear();
+			m_current_user_id = static_cast<i64>(id_);
 			for (const auto& chat : chats_)
 				add_chat(chat);
 		}
@@ -84,6 +84,7 @@ namespace ar
 		{
 			m_layout = ftxui::Container::Vertical({});
 			m_chats.clear();
+			m_current_user_id = -1;
 		}
 
 		bool Focusable() const override { return true; }

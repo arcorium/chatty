@@ -1,8 +1,8 @@
 ﻿#include "application.h"
 
 #include "ftxui/component/component.hpp"
+#include "ftxui/component/loop.hpp"
 #include "ftxui/component/component_base.hpp"
-#include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
 
 #include "component/text.h"
@@ -10,6 +10,10 @@
 
 namespace ar
 {
+	static constexpr std::string_view USER_OFFLINE_PH = "user is offline, come back later"sv;
+	static constexpr std::string_view NOT_SELECTING_PH = "please select person on left side panel"sv;
+	static constexpr std::string_view INPUT_ALLOWED_PH = "write your message here..."sv;
+
 	Application::Application()
 		: m_chat_room{std::make_shared<ChatRoom>()}, m_screen{ftxui::ScreenInteractive::Fullscreen()},
 		  m_client{asio::ip::address_v4{{127, 0, 0, 1}}, 9696}
@@ -18,16 +22,18 @@ namespace ar
 		m_client.set_disconnect_user_callback([this](u32 id_, User& user_) { on_disconnect_user(id_, user_); });
 		m_client.set_new_chat_callback([this](u32 id_, Chat&& chat_) { on_new_chat(id_, std::forward<Chat>(chat_)); });
 
-		add_user(0, " ");	// Dummy data to indicate it is not selecting any user
+		add_user(0, " ");
 	}
 
 	void Application::start()
 	{
 		m_client.connect();
-
-		m_client.wait_for_state(ClientState::Authenticating);
-		render_chat();
-
+		
+		if (m_client.wait_for_state(ClientState::Authenticating))
+			render_chat();
+		else
+			spdlog::warn("Failed to connect into server");
+		
 		m_client.disconnect();
 	}
 
@@ -58,51 +64,62 @@ namespace ar
 	{
 		using namespace ftxui;
 
-		int online_selected = -1;
-
 		std::string message{};
 		Component title = std::make_shared<DynamicText>(" ");
+		Component username_comp = std::make_shared<DynamicText>(" ");
 
 		auto send_message_fn = [&]
 		{
-			if (message.empty() || !online_selected)
+			if (message.empty() || !m_online_selected)
 				return;
-
-			const auto& details = m_user_details[online_selected];
-			if (!details.second)
-			{
-				message.clear();
-				return;
-			}
 
 			send_message(message);
 			message.clear();
 		};
 
-		Component msg_input = Input(&message, &m_send_input_placeholder, InputOption{ .multiline = false, .on_enter = send_message_fn });
+		auto close_fn = [this] { m_screen.Exit(); };
+
+		InputOption msg_input_option{ .multiline = false, .on_change = [&]
+		{
+			// Prevent typing when not selecting any user
+			if (!m_online_selected)
+			{
+				message.clear();
+				return;
+			}
+
+			// Prevent typing on offline user
+			const auto& details = m_user_details[m_online_selected];
+			if (!details.second)
+				message.clear();
+
+		}, .on_enter = send_message_fn };
+
+		Component msg_input = Input(&message, &m_send_input_placeholder, std::move(msg_input_option));
 		Component send_button = Button("Send", send_message_fn);
-		// Component close_button = Button("x", [&] { m_screen.Exit(); });
+		Component close_button = Button("Exit", close_fn);
 
 		auto online_list_option = MenuOption::Vertical();
 		online_list_option.on_change = [&]
 		{
 			const auto room_title = std::dynamic_pointer_cast<DynamicText>(title);
-			if (!online_selected)
+			if (!m_online_selected)
 			{
 				room_title->text("");
-				m_send_input_placeholder = "please select person on left side panel";
+				m_send_input_placeholder = NOT_SELECTING_PH;
+				chat_room()->clear();
 				return;
 			}
 
-			auto str = m_username_chats[online_selected];
-			auto details = m_user_details[online_selected];
+			auto str = m_username_chats[m_online_selected];
+			auto details = m_user_details[m_online_selected];
 			auto& chats = m_chat_database[details.first];
 
 			// Handle offline user?
 			if (!details.second)
-				m_send_input_placeholder = "user is offline, come back later";	// TODO: Better to have string_view instead and point it into some 'static' string
+				m_send_input_placeholder = USER_OFFLINE_PH;
 			else
-				m_send_input_placeholder = "write your message here...";
+				m_send_input_placeholder = INPUT_ALLOWED_PH;
 
 			// Set room chat
 			chat_room()->set(details.first, chats);
@@ -125,7 +142,7 @@ namespace ar
 					res |= inverted;
 				return res;
 			};
-		auto online_list = Menu(&m_username_chats, &online_selected, online_list_option);
+		auto online_list = Menu(&m_username_chats, &m_online_selected, online_list_option);
 		online_list |= CatchEvent([&](const Event& event_)
 		{
 			if (event_ == Event::Tab)
@@ -136,17 +153,17 @@ namespace ar
 			return false;
 		});
 
-		auto container = Container::Vertical(
+		const auto container = Container::Vertical(
 			{
 				online_list,
+				username_comp,
 				m_chat_room,
 				msg_input,
 				send_button,
 				title,
-				// close_button,
+				close_button,
 			}
 		);
-
 
 		auto layout = Renderer(container, [&]
 		{
@@ -154,10 +171,13 @@ namespace ar
 				{
 					vbox({
 						online_list->Render() | vscroll_indicator | frame | size(WIDTH, GREATER_THAN, 18)
-						/*| size(HEIGHT, LESS_THAN, 43)*/,
-						// filler(),
-						// separator(),
-						// close_button->Render(),
+						| size(HEIGHT, LESS_THAN, 40),
+						filler(),
+						separator(),
+						hbox({
+							username_comp->Render() | center | border | xflex,
+							close_button->Render(),
+						})
 					}),
 					separator(),
 					vbox({
@@ -181,17 +201,27 @@ namespace ar
 		std::string username{};
 		Component error_log = std::make_shared<DynamicText>("");
 
-		auto component = Container::Vertical({
+		auto modal_comp = Container::Vertical({
 			Container::Horizontal({
 				Renderer([] { return text("Username: "); }),
-				Input(&username, "username")
+				Input(&username, "....................")
 			}) | border,
+
 			Container::Horizontal({
-				Button("Exit", [&]{ m_screen.Exit(); }),
+				Button("Exit", close_fn),
 				Button("Authenticate", [&]
 				{
 					m_client.username(username);
-					m_client.wait_for_state(ClientState::Connected);
+					if (!m_client.wait_for_state(ClientState::Connected))
+					{
+						m_screen.Post([&]
+							{
+								std::dynamic_pointer_cast<DynamicText>(error_log)->text("Connection Rejected! Username already exists");
+								std::this_thread::sleep_for(1s);
+							});
+						return;
+					}
+					std::dynamic_pointer_cast<DynamicText>(username_comp)->text(std::move(username));
 
 					// Get list online
 					send_command_message(CommandType::OnlineList, std::nullopt, true);
@@ -203,11 +233,11 @@ namespace ar
 					}
 
 					modal_shown = false;
-				}) /*| align_right*/,
+				}),
 			}) | align_right,
 		});
 
-		component |= Renderer([&](Element inner)
+		modal_comp |= Renderer([&](Element inner)
 		{
 			return vbox({
 					text("Authentication") | center,
@@ -219,9 +249,14 @@ namespace ar
 				| border;
 		});
 
-		layout |= Modal(component, &modal_shown);
+		layout |= Modal(modal_comp, &modal_shown);
 
-		m_screen.Loop(layout);
+		Loop loop{&m_screen, layout};
+
+		while (!loop.HasQuitted() && m_client.connection().is_connected())
+		{
+			loop.RunOnce();
+		}
 	}
 
 	void Application::send_command_message(CommandType type_, std::optional<u32> argument_, bool wait_feedback) noexcept
@@ -255,7 +290,7 @@ namespace ar
 
 		m_screen.Post([this, index]
 			{
-				remove_user(index);
+				remove_user(static_cast<u32>(index));
 			});
 	}
 
@@ -294,6 +329,10 @@ namespace ar
 		}
 		// Set offline
 		details.second = false;
+
+		// Check if current selection is removed user and change placeholder here
+		if (index_ == static_cast<u32>(m_online_selected))
+			m_send_input_placeholder = USER_OFFLINE_PH;
 	}
 
 	std::shared_ptr<ChatRoom> Application::chat_room() noexcept

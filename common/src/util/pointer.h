@@ -76,12 +76,12 @@ namespace ar
 			return m_ptr;
 		}
 
-		constexpr T operator*() noexcept
+		constexpr T& operator*() noexcept
 		{
 			return *m_ptr;
 		}
 
-		constexpr T operator*() const noexcept
+		constexpr const T& operator*() const noexcept
 		{
 			return *m_ptr;
 		}

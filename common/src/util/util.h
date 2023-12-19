@@ -1,6 +1,8 @@
 #pragma once
 #include <random>
 #include <type_traits>
+#include <span>
+#include <chrono>
 
 #include <cryptopp/elgamal.h>
 #include <cryptopp/cryptlib.h>
@@ -62,6 +64,20 @@ namespace ar
 			plain[i] ^= key_[i];
 		}
 		return plain_;
+	}
+
+	static cry::ElGamal::PrivateKey generate_private_key(cry::RandomNumberGenerator& rng_)
+	{
+		cry::ElGamal::PrivateKey private_key{};
+		private_key.GenerateRandomWithKeySize(rng_, 512);
+		return private_key;
+	}
+
+	static cry::ElGamal::PublicKey generate_public_key(const cry::ElGamal::PrivateKey& private_key_)
+	{
+		cry::ElGamal::PublicKey public_key{};
+		private_key_.MakePublicKey(public_key);
+		return public_key;
 	}
 
 	static std::tuple<cry::ElGamal::PrivateKey, cry::ElGamal::PublicKey> generate_keys(cry::RandomNumberGenerator& rng_)

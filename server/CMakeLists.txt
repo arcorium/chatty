@@ -3,6 +3,8 @@ add_executable (server
 "src/main.cpp" 
 "src/application.h" 
 "src/application.cpp" 
+"src/simple_server.h" 
+"src/simple_server.cpp" 
 "src/connection_manager.h" 
 "src/connection_manager.cpp" 
 "src/user.h" 

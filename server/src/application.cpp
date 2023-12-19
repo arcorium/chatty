@@ -11,6 +11,7 @@ namespace ar
 
 	void application::start()
 	{
+		spdlog::info("Server Started!");
 		m_server.start(false);
 	}
 }

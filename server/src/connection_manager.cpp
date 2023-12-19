@@ -1,6 +1,5 @@
 ﻿#include "connection_manager.h"
 
-#include <ranges>
 
 #include "util/util.h"
 
@@ -24,8 +23,7 @@ namespace ar
 		const auto number = generate_random_numbers<usize>();
 		m_users[conn_.id()].key = number;
 		const ValidationMessage val_msg{number};
-		const Message msg{ val_msg };
-		conn_.send(msg);
+		conn_.send(val_msg);
 
 		// Wait for answer
 		// conn_.read_timed(std::chrono::milliseconds::zero());
@@ -41,11 +39,12 @@ namespace ar
 		const bool result = message.challenge == number;
 		if (!result)
 		{
-			send_feedback<false>(conn_);
+			send_feedback<FeedbackType::ValidationFailed>(conn_);
+			remove_connection(conn_, true);
 			return;
 		}
 
-		send_feedback<true>(conn_);
+		send_feedback<FeedbackType::ValidationSucceed>(conn_);
 
 		// spdlog::info("[{}] Accepted Connection", conn_.id());
 		conn_.read_once([this](connection_type& conn_, const Message& msg_)
@@ -60,11 +59,12 @@ namespace ar
 		auto msg = msg_.body_as<AuthenticateMessage>();
 		if (!is_unique(msg.username))
 		{
-			send_feedback<false>(conn_);
-			remove_connection(conn_);
+			send_feedback<FeedbackType::AuthenticationFailed>(conn_);
+			// TODO: Instead of reject the connection, server can ask another username
+			remove_connection(conn_, true);
 			return;
 		}
-		send_feedback<true>(conn_);
+		send_feedback<FeedbackType::AuthenticationSucceed>(conn_);
 
 		const auto id = conn_.id();
 		spdlog::info("User logged in {}:{}", id, msg.username);
@@ -91,15 +91,22 @@ namespace ar
 
 	void ConnectionManager::remove_connection(connection_type& conn_) noexcept
 	{
+		remove_connection(conn_, false);
+	}
+
+	void ConnectionManager::remove_connection(connection_type& conn_, bool reject_) noexcept
+	{
+		// TODO: bool reject_ can use template instead
 		const auto id = conn_.id();
 
-		// Send to all connections that this id is disconnected
-		const UserDisconnectMessage dc_message{ id };
-		for(const auto conn : m_connections | std::ranges::views::filter([=](connection_ptr conn_){ return conn_->id() != id; }))
+		if (!reject_)
 		{
-			conn->send(dc_message);
+			// Send to all connections that this id is disconnected
+			const UserDisconnectMessage dc_message{ id };
+			broadcast(dc_message, id);
 		}
 
+		// Remove connection
 		if (std::erase_if(m_connections, [=](connection_ptr conn2_) { return conn2_->id() == id; }))
 		{
 			spdlog::info("Client {} disconnected", id);

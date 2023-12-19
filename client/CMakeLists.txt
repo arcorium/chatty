@@ -4,11 +4,12 @@ add_executable (client
 "src/application.h"
 "src/application.cpp"
 
-
 "src/user.h" 
 "src/component/text.h"
 "src/component/chat_room.h"
 "src/chat.h"
+"src/simple_client.h"
+"src/simple_client.cpp"
 )
 
 find_package(cryptopp CONFIG REQUIRED)

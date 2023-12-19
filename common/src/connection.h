@@ -32,7 +32,7 @@ namespace ar
 		using socket_type = asio::ip::tcp::socket;
 
 		Connection(id_type id_, asio::ip::tcp::socket&& socket_, IMessageHandler<ConnectionType::Server>& msg_handler_, IConnectionHandler& conn_handler_)
-			: m_on_writing{ false }, m_message_ready{ false },
+			: m_on_writing{ false },
 			  m_read_once_timer{std::make_unique<asio::steady_timer>(socket_.get_executor())}, m_id{id_},
 			  m_message_handler{msg_handler_}, m_connection_handler{conn_handler_}, m_header_input_buffer{},
 			  m_socket{std::forward<socket_type>(socket_)}
@@ -43,7 +43,7 @@ namespace ar
 		Connection& operator=(const Connection& other) = delete;
 
 		Connection(Connection&& other) noexcept
-			: m_on_writing(other.m_on_writing), m_message_ready(other.m_message_ready),
+			: m_on_writing(other.m_on_writing),
 			  m_read_once_timer{std::move(other.m_read_once_timer)},
 			  m_id(other.m_id),
 			  m_message_handler(other.m_message_handler),
@@ -67,7 +67,6 @@ namespace ar
 			m_out_messages = std::move(other.m_out_messages);
 			m_input_message = std::move(other.m_input_message);
 			m_socket = std::move(other.m_socket);
-			m_message_ready = other.m_message_ready;
 			m_read_once_timer = std::move(other.m_read_once_timer);
 
 			other.m_id = 0;
@@ -88,6 +87,7 @@ namespace ar
 		{
 			if (!is_connected())
 				return;
+			m_connection_handler->remove_connection(*this);
 			m_socket.close();
 		}
 
@@ -157,7 +157,6 @@ namespace ar
 		id_type id() const noexcept { return m_id; }
 		socket_type& socket() noexcept { return m_socket; }
 		const socket_type& socket() const noexcept { return m_socket; }
-		bool is_message_ready() const noexcept { return m_message_ready; }
 		bool is_connected() const noexcept { return m_socket.is_open(); }
 
 	private:
@@ -174,13 +173,13 @@ namespace ar
 			});
 		}
 
+		// TODO: Using enum class with Bitmask, instead of 3 booleans
 		template<bool Continuous, bool Timed = false, bool Handle = true>
 		void read_header() noexcept
 		{
 			static_assert((Continuous && !Timed) || (!Continuous && Timed) || (!Continuous && !Timed), "Couldn't do continuous read with timed turned on, Timed can only be used for Non-continuous read");
 			static_assert((Continuous && Handle) || (!Continuous && (Handle || !Handle)), "Continuous read should be handled by IMessageHandler");
 
-			m_message_ready = false;
 			asio::async_read(m_socket, asio::buffer(m_header_input_buffer, Message::header_size), [&](const asio::error_code& ec_, [[maybe_unused]] size_t)
 			{
 				if constexpr (Timed)
@@ -207,7 +206,7 @@ namespace ar
 				// socket closed
 				if (is_disconnect_error(ec_))
 				{
-					m_connection_handler->remove_connection(*this);
+					close();
 					return;
 				}
 
@@ -232,15 +231,13 @@ namespace ar
 				// socket closed
 				if (is_disconnect_error(ec_))
 				{
-					m_connection_handler->remove_connection(*this);
+					close();
 					return;
 				}
-
-				close();
+				// close();
 			}
 			else
 			{
-				m_message_ready = true;
 				m_read_once_timer->cancel_one();
 				if constexpr (Handle)
 					handle_message();
@@ -254,6 +251,7 @@ namespace ar
 		{
 			if (ec_)
 			{
+				// Close regardless of the error
 				close();
 				return;
 			}
@@ -285,7 +283,6 @@ namespace ar
 
 	private:
 		bool m_on_writing;
-		bool m_message_ready;
 		std::unique_ptr<asio::steady_timer> m_read_once_timer;
 
 		id_type m_id;
@@ -307,7 +304,7 @@ namespace ar
 		using message_handler_type = IMessageHandler<ConnectionType::Client>;
 
 		Connection(asio::io_context& context_, message_handler_type& msg_handler_, IConnectionValidator<ConnectionType::Client>& validator_)
-			: m_on_writing{ false }, m_message_ready{ false }, m_read_once_timer{ std::make_unique<asio::steady_timer>(context_) },
+			: m_on_writing{ false }/*, m_is_closed{ false }*/, m_read_once_timer{ std::make_unique<asio::steady_timer>(context_) },
 			  m_message_handler{ msg_handler_ },
 			  m_validation_handler{validator_}, m_header_input_buffer{}, m_socket{context_}
 		{
@@ -317,7 +314,7 @@ namespace ar
 		Connection& operator=(const Connection& other) = delete;
 
 		Connection(Connection&& other) noexcept
-			: m_on_writing(other.m_on_writing), m_message_ready(other.m_message_ready),
+			: m_on_writing(other.m_on_writing)/*, m_is_closed{ other.m_is_closed}*/,
 			  m_read_once_timer{std::move(other.m_read_once_timer)},
 			  m_message_handler(other.m_message_handler),
 			  m_validation_handler(other.m_validation_handler),
@@ -338,9 +335,9 @@ namespace ar
 			m_header_input_buffer = std::move(other.m_header_input_buffer);
 			m_out_messages = std::move(other.m_out_messages);
 			m_input_message = std::move(other.m_input_message);
-			m_message_ready = other.m_message_ready;
 			m_socket = std::move(other.m_socket);
 			m_read_once_timer = std::move(other.m_read_once_timer);
+			// m_is_closed = other.m_is_closed;
 			return *this;
 		}
 
@@ -358,12 +355,12 @@ namespace ar
 		{
 			if (!is_connected())
 				return;
+			// m_is_closed = true;
 			m_socket.close();
 		}
 
-
 		/**
-		 * \brief do async_read only once
+		 * \brief do async_read only once and have timer on it
 		 */
 		template<std::invocable<Connection&> F = decltype(empty_timeout_callback<ConnectionType::Client>), std::invocable<Connection&, const Message&> F1 = decltype(empty_complete_callback<ConnectionType::Client>)>
 		void read_timed(const std::chrono::milliseconds& timeout_, F1&& complete_callback_ = empty_complete_callback<ConnectionType::Client>, F&& timeout_callback_ = empty_timeout_callback<ConnectionType::Client>) noexcept
@@ -393,7 +390,7 @@ namespace ar
 		}
 
 		/**
-		 * \brief do async_read only once, commonly used for handshake protocol
+		 * \brief do async_read only once
 		 */
 		template<std::invocable<Connection&, const Message&> F = decltype(empty_complete_callback<ConnectionType::Client>)>
 		void read_once(F&& complete_callback_ = empty_complete_callback<ConnectionType::Client>) noexcept
@@ -429,7 +426,10 @@ namespace ar
 			m_socket.async_connect(endpoint_, [&](const asio::error_code& ec_)
 				{
 					if (ec_)
+					{
+						m_socket.close();
 						return;
+					}
 
 					// Validation
 					m_validation_handler->start_validation(*this);
@@ -448,8 +448,7 @@ namespace ar
 
 		socket_type& socket() noexcept { return m_socket; }
 		const socket_type& socket() const noexcept { return m_socket; }
-		bool is_connected() const noexcept { return m_socket.is_open(); }
-		bool is_message_ready() const noexcept { return m_message_ready; }
+		bool is_connected() const noexcept { return m_socket.is_open() /*&& !m_is_closed*/; }
 
 	private:
 		void send(std::span<const u8> msg_)
@@ -468,7 +467,6 @@ namespace ar
 			static_assert((Continuous && !Timed) || (!Continuous && Timed) || (!Continuous && !Timed), "Couldn't do continuous read with timed turned on, Timed can only be used for Non-continuous read");
 			static_assert((Continuous && Handle) || (!Continuous && (Handle || !Handle)), "Continuous read should be handled by IMessageHandler");
 
-			m_message_ready = false;
 			asio::async_read(m_socket, asio::buffer(m_header_input_buffer, Message::header_size), [&](const asio::error_code& ec_, [[maybe_unused]] size_t a)
 			{
 				if constexpr (Timed)
@@ -528,8 +526,8 @@ namespace ar
 			}
 			else
 			{
-				m_message_ready = true;
 				m_read_once_timer->cancel();	// Cancel on here, so when on handle_message calls another read_once or read_timed it will not bother the new handler
+												// Or maybe better to post it on asio event loop function on handle_message
 
 				if constexpr (Handle)
 					handle_message();
@@ -572,7 +570,7 @@ namespace ar
 
 	private:
 		bool m_on_writing;
-		bool m_message_ready;
+		// bool m_is_closed;
 
 		std::unique_ptr<asio::steady_timer> m_read_once_timer;
 

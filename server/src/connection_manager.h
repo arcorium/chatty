@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <ranges>
 #include <atomic>
 
 #include "connection.h"
@@ -25,6 +26,8 @@ namespace ar
 		connection_ptr add_connection(asio::ip::tcp::socket&& socket_, ref<IMessageHandler<ConnectionType::Server>> message_handler_) noexcept override;
 		void remove_connection(connection_type& conn_) noexcept override;
 
+		void remove_connection(connection_type& conn_, bool reject_) noexcept;
+
 		connection_ptr connection(connection_type::id_type id_) noexcept override;
 		std::span<connection_ptr> connections() noexcept override;
 
@@ -33,8 +36,11 @@ namespace ar
 	private:
 		bool is_unique(std::string_view username_) const noexcept;
 
-		template<bool Result, bool RemoveOnFalse = true>
+		template<FeedbackType Type>
 		void send_feedback(connection_type& conn_) noexcept;
+
+		template<Serializable T>
+		void broadcast(const T& msg_, connection_type::id_type exception_) noexcept;
 
 	private:
 		connection_container m_connections;
@@ -44,17 +50,19 @@ namespace ar
 		constexpr static inline std::string_view KEY = "n1odah10"sv;
 	};
 
-	template <bool Result, bool RemoveOnFalse>
+	template <FeedbackType Type>
 	void ConnectionManager::send_feedback(connection_type& conn_) noexcept
 	{
-		const FeedbackMessage fed_msg{ Result };
-		const Message msg{ fed_msg };
-		conn_.send(msg);
+		const FeedbackMessage fed_msg{ Type };
+		conn_.send(fed_msg);
+	}
 
-		if constexpr (!Result && RemoveOnFalse)
+	template <Serializable T>
+	void ConnectionManager::broadcast(const T& msg_, connection_type::id_type exception_) noexcept
+	{
+		for (const auto conn : m_connections | std::ranges::views::filter([=](connection_ptr conn_) { return conn_->id() != exception_; }))
 		{
-			spdlog::warn("[{}] Rejected Connection", conn_.id());
-			remove_connection(conn_);
+			conn->send(msg_);
 		}
 	}
 }
